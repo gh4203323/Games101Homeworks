@@ -42,20 +42,24 @@ auto to_vec4(const Eigen::Vector3f& v3, float w = 1.0f)
 static bool insideTriangle(int x, int y, const Vector3f* _v)
 {   
     // TODO : Implement this function to check if the point (x, y) is inside the triangle represented by _v[0], _v[1], _v[2]
-	Eigen::Vector2f P;
-	P << x, y;
 
-	Eigen::Vector2f AB = _v[1].head(2) - _v[0].head(2);
-	Eigen::Vector2f BC = _v[2].head(2) - _v[1].head(2);
-	Eigen::Vector2f CA = _v[0].head(2) - _v[2].head(2);
+	float ABX = _v[1][0] - _v[0][0];
+	float ABY = _v[1][1] - _v[0][1];
+	float BCX = _v[2][0] - _v[1][0];
+	float BCY = _v[2][1] - _v[1][1];
+	float CAX = _v[0][0] - _v[2][0];
+	float CAY = _v[0][1] - _v[2][1];
 
-	Eigen::Vector2f AP = P - _v[0].head(2);
-	Eigen::Vector2f BP = P - _v[1].head(2);
-	Eigen::Vector2f CP = P - _v[2].head(2);
+	float APX = x - _v[0][0];
+	float APY = y - _v[0][1];
+	float BPX = x - _v[1][0];
+	float BPY = y - _v[1][1];
+	float CPX = x - _v[2][0];
+	float CPY = y - _v[2][1];
 
-	return AB[0] * AP[1] - AB[1] * AP[0] > 0
-		&& BC[0] * BP[1] - BC[1] * BP[0] > 0
-		&& CA[0] * CP[1] - CA[1] * CP[0] > 0;
+	return ABX * APY - ABY * APX > 0
+		&& BCX * BPY - BCY * BPX > 0
+		&& CAX * CPY - CAY * CPX > 0;
 }
 
 static std::tuple<float, float, float> computeBarycentric2D(float x, float y, const Vector3f* v)
@@ -68,7 +72,7 @@ static std::tuple<float, float, float> computeBarycentric2D(float x, float y, co
 
 void rst::rasterizer::draw(pos_buf_id pos_buffer, ind_buf_id ind_buffer, col_buf_id col_buffer, Primitive type)
 {
-    auto& buf = pos_buf[pos_buffer.pos_id];
+	auto& buf = pos_buf[pos_buffer.pos_id];
     auto& ind = ind_buf[ind_buffer.ind_id];
     auto& col = col_buf[col_buffer.col_id];
 
@@ -79,6 +83,7 @@ void rst::rasterizer::draw(pos_buf_id pos_buffer, ind_buf_id ind_buffer, col_buf
     for (auto& i : ind)
     {
         Triangle t;
+		//get vertex NDC positions
         Eigen::Vector4f v[] = {
                 mvp * to_vec4(buf[i[0]], 1.0f),
                 mvp * to_vec4(buf[i[1]], 1.0f),
@@ -150,17 +155,18 @@ void rst::rasterizer::rasterize_triangle(const Triangle& t) {
 				float MinDepth = FLT_MAX;
 				//细分点落入三角形个数
 				int Count = 0;
-				//
+				//					
+				float alpha = 1;
+				float beta = 0;
+				float gamma = 0;
 				for (int i = 0; i < 4; ++i)
 				{
-					if (insideTriangle(static_cast<double>(x), static_cast<double>(y), t.v))
+
+					if (insideTriangle(static_cast<double>(x) + pos[i][0], static_cast<double>(y) + pos[i][1], t.v))
 					{
 						auto tup = computeBarycentric2D((float)x + pos[i][0], (float)y + pos[i][1], t.v);
-						float alpha;
-						float beta;
-						float gamma;
 						std::tie(alpha, beta, gamma) = tup;
-						float w_reciprocal = 1.0/(alpha / v[0].w() + beta / v[1].w() + gamma / v[2].w());
+						float w_reciprocal = 1.f/((alpha / v[0].w()) + (beta / v[1].w()) + (gamma / v[2].w()));
 						float z_interpolated = alpha * v[0].z() / v[0].w() + beta * v[1].z() / v[1].w() + gamma * v[2].z() / v[2].w();
 						z_interpolated *= w_reciprocal;
 						MinDepth = std::min(MinDepth, z_interpolated);
@@ -170,7 +176,9 @@ void rst::rasterizer::rasterize_triangle(const Triangle& t) {
 				if (Count)
 				{
 					if (depth_buf[get_index(x, y)] > MinDepth) {
-						Vector3f color = t.getColor() * Count / 4.f;
+						Vector3f color = (t.color[0] * alpha + t.color[1] * beta + t.color[2] * gamma) * 255.f;
+						//Vector3f color = t.getColor() * Count / 4.f;
+						color = color * Count / 4.f;
 						Vector3f point(3);
 						point << (float)x, (float)y, MinDepth;
 
@@ -180,6 +188,42 @@ void rst::rasterizer::rasterize_triangle(const Triangle& t) {
 					}
 				}
 			}	
+		}
+	}
+	else
+	{
+		for (int x = MinX; x < MaxX; ++x)
+		{
+			for (int y = MinY; y < MaxY; ++y)
+			{
+				//记录最小深度
+				float MinDepth = FLT_MAX;
+				for (int i = 0; i < 4; ++i)
+				{
+					if (insideTriangle(static_cast<double>(x), static_cast<double>(y), t.v))
+					{
+						auto tup = computeBarycentric2D((float)x, (float)y, t.v);
+						float alpha;
+						float beta;
+						float gamma;
+						std::tie(alpha, beta, gamma) = tup;
+						float w_reciprocal = 1.0 / (alpha / v[0].w() + beta / v[1].w() + gamma / v[2].w());
+						float z_interpolated = alpha * v[0].z() / v[0].w() + beta * v[1].z() / v[1].w() + gamma * v[2].z() / v[2].w();
+						z_interpolated *= w_reciprocal;
+						MinDepth = std::min(MinDepth, z_interpolated);
+
+						if (depth_buf[get_index(x, y)] > MinDepth) {
+							Vector3f color = t.getColor();
+							Vector3f point(3);
+							point << (float)x, (float)y, MinDepth;
+
+							depth_buf[get_index(x, y)] = MinDepth;
+
+							set_pixel(point, color);
+						}
+					}
+				}
+			}
 		}
 	}
     // If so, use the following code to get the interpolated z value.
